@@ -43,8 +43,8 @@ Each remediation follows a closed-loop model:
 ## Quick Start (5 minutes)
 
 1. Start with one low-risk package, e.g. `02-DiskSpaceCleanup`.
-2. Go to **Intune admin center**  
-   **Reports → Endpoint analytics → Proactive remediations → Create script package**.
+2. Go to Intune admin center
+Devices → Scripts and remediations → Remediations → Create.
 3. Upload matching scripts:
    - Detection: `02-DiskSpaceCleanup/Detect-LowDiskSpace.ps1`
    - Remediation: `02-DiskSpaceCleanup/Remediate-LowDiskSpace.ps1`
