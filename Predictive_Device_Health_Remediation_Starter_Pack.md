@@ -1,6 +1,6 @@
 # 🚀 Predictive Device Health Remediation – Starter Pack
 
-This page provides a practical, ready-to-implement starter pack of **7 high-impact remediations** aligned with the Microsoft Endpoint Management automation strategy (Intune + Endpoint Analytics). These remediations are designed to deliver immediate improvements in device performance, stability, and user experience.
+This page provides a practical, ready-to-implement starter pack of **7 high-impact remediations** for Microsoft-managed Windows endpoints. It is designed to align with Intune-based remediation workflows and endpoint health monitoring, but product names, portal UX, and recommended implementation details may change over time. Validate all tenant-specific and platform-specific assumptions before production rollout.
 
 ---
 
@@ -12,11 +12,11 @@ Devices experience long boot times and slow login performance.
 ## 🔧 Remediation Actions
 - Clear temporary files
 - Disable unnecessary startup applications
-- Restart critical system services (e.g., Windows Update, AppX)
+- Restart critical system services where appropriate
 
 ## 💡 Detection Logic
-- Startup time exceeds defined threshold
-- Endpoint Analytics performance degradation signal
+- Startup time exceeds a defined threshold
+- Endpoint health or performance signals indicate degraded startup experience
 
 ## ✅ Outcome
 - Faster boot and login experience
@@ -35,7 +35,7 @@ Low disk space impacts performance and causes update failures.
 - Empty Recycle Bin
 
 ## 💡 Detection Logic
-- Free disk space below 15–20%
+- Free disk space falls below a defined threshold, for example 15–20%
 
 ## ✅ Outcome
 - Improved system performance
@@ -51,7 +51,7 @@ Windows updates fail or remain stuck, causing compliance risks.
 ## 🔧 Remediation Actions
 - Restart Windows Update services
 - Reset update components
-- Trigger update re-scan
+- Trigger update detection or re-scan using methods validated for your current Windows builds
 
 ## 💡 Detection Logic
 - Update installation failure detected
@@ -73,7 +73,7 @@ Devices slow down due to excessive resource usage.
 - Log repeated offenders
 
 ## 💡 Detection Logic
-- CPU usage > 85% for sustained duration
+- CPU usage exceeds a defined threshold for a sustained duration
 - Memory utilization pressure detected
 
 ## ✅ Outcome
@@ -91,7 +91,7 @@ Devices fail to connect to corporate network or VPN.
 - Reset network adapter
 - Flush DNS cache
 - Renew IP address
-- Reapply VPN configuration profile
+- Reapply or re-sync VPN-related configuration where supported in your tenant and Windows build
 
 ## 💡 Detection Logic
 - Connectivity tests fail
@@ -109,8 +109,8 @@ Devices fail to connect to corporate network or VPN.
 Devices fall out of compliance due to configuration drift.
 
 ## 🔧 Remediation Actions
-- Trigger device sync with Intune
-- Reapply security and configuration policies
+- Trigger device sync with Intune or the current device management platform
+- Reapply security and configuration policies through supported policy channels
 
 ## 💡 Detection Logic
 - Device marked non-compliant
@@ -129,7 +129,7 @@ Critical applications crash repeatedly, impacting productivity.
 ## 🔧 Remediation Actions
 - Detect repeated crashes via logs
 - Repair or reinstall affected application
-- Restart application services
+- Restart application services where applicable
 
 ## 💡 Detection Logic
 - Multiple crashes for the same application within a defined period
@@ -155,6 +155,8 @@ Critical applications crash repeatedly, impacting productivity.
 - CPU Stabilization
 - App Self-Healing
 
+Validate each phase against current tenant behavior, device profile mix, and support risk before broader rollout.
+
 ---
 
 # 🔁 Key Principle
@@ -167,11 +169,11 @@ Detect → Remediate → Validate → Improve
 
 # ✅ Final Outcome
 
-Implementing this starter pack enables:
+Implementing this starter pack can enable:
 
 - Proactive issue resolution
 - Reduced support tickets
 - Improved endpoint performance
 - Better user experience
 
-This is the foundation for building a **predictive, self-healing endpoint environment**.
+This is a foundation for building a **predictive, self-healing endpoint environment**, with thresholds, methods, and rollout practices tailored to your organization.
