@@ -6,17 +6,19 @@
     Signals used:
       - Last boot duration from Diagnostics-Performance event log (Event ID 100)
       - Excess temp-file accumulation
-      - Excess enabled startup apps
+      - Excess enabled startup apps from Run keys
     Exit 0 = healthy (no action), Exit 1 = issue detected (trigger remediation).
 .NOTES
-    Intune Proactive Remediation - Detection script. Run in 64-bit PowerShell.
+    Intune remediation detection script. Run in 64-bit PowerShell.
+    Threshold defaults in this script are examples and should be tuned for your
+    hardware profile, Windows build mix, and operational baseline.
 #>
 
 [CmdletBinding()]
 param(
-    [int]$BootThresholdMs   = 60000,   # 60s boot considered slow
-    [int]$MaxStartupApps    = 12,      # too many startup entries
-    [long]$TempBytesThreshold = 1GB    # temp clutter threshold
+    [int]$BootThresholdMs   = 60000,   # Example threshold: 60s boot considered slow
+    [int]$MaxStartupApps    = 12,      # Example threshold: high Run-key startup count
+    [long]$TempBytesThreshold = 1GB    # Example threshold: temp clutter threshold
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,15 +30,19 @@ function Write-Log { param($m) "$(Get-Date -Format o) $m" | Out-File -FilePath $
 try {
     $reasons = @()
 
-    # 1. Boot duration from the Diagnostics-Performance operational log
+    # 1. Boot duration from the Diagnostics-Performance operational log.
+    # Validate the event schema and property indexing on the Windows versions
+    # in your environment before relying on this signal broadly.
     try {
         $evt = Get-WinEvent -FilterHashtable @{
             LogName = 'Microsoft-Windows-Diagnostics-Performance/Operational'; Id = 100
         } -MaxEvents 1 -ErrorAction Stop
-        if ($evt) {
-            $bootMs = [int]($evt.Properties[8].Value)  # BootTime (ms)
+        if ($evt -and $evt.Properties.Count -gt 8) {
+            $bootMs = [int]($evt.Properties[8].Value)
             Write-Log "Last boot duration: ${bootMs}ms (threshold ${BootThresholdMs}ms)"
             if ($bootMs -gt $BootThresholdMs) { $reasons += "BootTime ${bootMs}ms" }
+        } else {
+            Write-Log 'Boot event did not include expected BootTime property index.'
         }
     } catch { Write-Log "Boot event unavailable: $($_.Exception.Message)" }
 
@@ -52,7 +58,7 @@ try {
     Write-Log "Temp bytes: $tempBytes (threshold $TempBytesThreshold)"
     if ($tempBytes -gt $TempBytesThreshold) { $reasons += "Temp $([math]::Round($tempBytes/1GB,2))GB" }
 
-    # 3. Enabled startup app count (run + startup folder approdx)
+    # 3. Enabled startup app count from Run keys
     $runKeys = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
         'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
@@ -72,8 +78,8 @@ try {
         exit 1
     }
 
-    Write-Log "Healthy - no slow-startup signals."
-    Write-Output "Startup health OK"
+    Write-Log 'Healthy - no slow-startup signals.'
+    Write-Output 'Startup health OK'
     exit 0
 }
 catch {
