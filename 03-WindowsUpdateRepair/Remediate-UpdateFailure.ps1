@@ -2,14 +2,16 @@
 .SYNOPSIS
     Remediation: Windows Update Repair (Remediation 3)
 .DESCRIPTION
-    Standard WU component reset:
+    Standard Windows Update component reset:
       - Stop wuauserv, bits, cryptsvc, msiserver
       - Rename SoftwareDistribution and catroot2
-      - Re-register / restart services
-      - Trigger an update detection re-scan
+      - Restart services
+      - Trigger an update detection re-scan using a best-effort method
     Validates services are running afterward.
 .NOTES
-    Intune Proactive Remediation - Remediation script. Runs as SYSTEM.
+    Intune remediation script. Runs as SYSTEM.
+    Some service defaults, scan triggers, and post-reset behavior can vary by
+    Windows version. Validate in your supported build matrix before broad rollout.
 #>
 
 [CmdletBinding()]
@@ -32,8 +34,10 @@ try {
     foreach ($folder in "$env:WINDIR\SoftwareDistribution","$env:WINDIR\System32\catroot2") {
         if (Test-Path $folder) {
             $bak = "$folder.bak.$stamp"
-            try { Rename-Item -Path $folder -NewName (Split-Path $bak -Leaf) -ErrorAction Stop
-                  Write-Log "Renamed $folder -> $bak" }
+            try {
+                Rename-Item -Path $folder -NewName (Split-Path $bak -Leaf) -ErrorAction Stop
+                Write-Log "Renamed $folder -> $bak"
+            }
             catch { Write-Log "Could not rename $folder : $($_.Exception.Message)" }
         }
     }
@@ -46,13 +50,18 @@ try {
             Write-Log "Started: $s"
         } catch { Write-Log "Start $s failed: $($_.Exception.Message)" }
     }
-    # wuauserv should be automatic (delayed) on most builds
+
+    # Service startup expectations can vary by Windows build and policy.
     Set-Service wuauserv -StartupType Automatic -ErrorAction SilentlyContinue
 
     # 4. Trigger detection re-scan
     try {
-        Start-Process -FilePath "$env:WINDIR\System32\UsoClient.exe" -ArgumentList 'StartScan' -WindowStyle Hidden -ErrorAction SilentlyContinue
-        Write-Log 'Triggered UsoClient StartScan'
+        if (Test-Path "$env:WINDIR\System32\UsoClient.exe") {
+            Start-Process -FilePath "$env:WINDIR\System32\UsoClient.exe" -ArgumentList 'StartScan' -WindowStyle Hidden -ErrorAction SilentlyContinue
+            Write-Log 'Triggered UsoClient StartScan (best effort). Validate support on current Windows builds.'
+        } else {
+            Write-Log 'UsoClient.exe not present; no re-scan trigger executed.'
+        }
     } catch { Write-Log "Re-scan trigger: $($_.Exception.Message)" }
 
     # 5. Validate
