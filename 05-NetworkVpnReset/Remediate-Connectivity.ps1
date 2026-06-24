@@ -6,11 +6,13 @@
     - Releases / renews DHCP lease
     - Resets Winsock and TCP/IP stack (winsock reset, int ip reset)
     - Restarts active physical adapters
-    - Re-triggers the Intune-delivered VPN profile (best-effort sync)
+    - Attempts a best-effort device management sync that may help refresh
+      Intune-delivered VPN or connectivity-related configuration
     Validates connectivity afterward.
 .NOTES
-    Intune Proactive Remediation - Remediation script. Runs as SYSTEM.
-    Note: winsock/ip reset benefits from a reboot to fully apply.
+    Intune remediation script. Runs as SYSTEM.
+    Winsock/IP reset behavior, scheduled task naming, and MDM sync behavior can
+    vary by Windows version and enrollment state. Validate before broad rollout.
 #>
 
 [CmdletBinding()]
@@ -39,7 +41,7 @@ try {
     # 3. Winsock + TCP/IP reset
     netsh winsock reset | Out-Null
     netsh int ip reset  | Out-Null
-    $actions += 'Reset Winsock/TCPIP (reboot recommended)'
+    $actions += 'Reset Winsock/TCPIP (reboot may be required on some systems)'
 
     # 4. Bounce active physical adapters
     Get-NetAdapter -Physical -ErrorAction SilentlyContinue |
@@ -51,13 +53,24 @@ try {
             } catch { Write-Log "Adapter $($_.Name): $($_.Exception.Message)" }
         }
 
-    # 5. Re-trigger VPN/config profile delivery via Intune MDM sync
+    # 5. Attempt device management sync that may refresh VPN/config profile delivery
     try {
-        Start-Process -FilePath "$env:WINDIR\System32\deviceenroller.exe" -ArgumentList '/o','/c' -WindowStyle Hidden -ErrorAction SilentlyContinue
+        if (Test-Path "$env:WINDIR\System32\deviceenroller.exe") {
+            Start-Process -FilePath "$env:WINDIR\System32\deviceenroller.exe" -ArgumentList '/o','/c' -WindowStyle Hidden -ErrorAction SilentlyContinue
+            Write-Log 'Invoked deviceenroller.exe for best-effort sync trigger.'
+        } else {
+            Write-Log 'deviceenroller.exe not present; skipping enrollment-based sync trigger.'
+        }
+
         $task = Get-ScheduledTask -TaskPath '\Microsoft\Windows\EnterpriseMgmt\*' -ErrorAction SilentlyContinue |
                 Where-Object { $_.TaskName -match 'Schedule.*created.*OMA' } | Select-Object -First 1
-        if ($task) { Start-ScheduledTask -InputObject $task; $actions += 'Triggered MDM/VPN profile sync' }
-    } catch { Write-Log "VPN profile sync: $($_.Exception.Message)" }
+        if ($task) {
+            Start-ScheduledTask -InputObject $task
+            $actions += 'Triggered MDM/VPN profile sync'
+        } else {
+            Write-Log 'No matching EnterpriseMgmt scheduled task found for OMA sync trigger.'
+        }
+    } catch { Write-Log "VPN/profile sync: $($_.Exception.Message)" }
 
     # Validate
     Start-Sleep -Seconds 5
