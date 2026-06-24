@@ -13,41 +13,98 @@
 [CmdletBinding()]
 param(
     # Startup entries that are safe to disable when present. Adjust per org.
-    [string[]]$DisableStartupNames = @('OneDriveSetup','Spotify','Steam','EpicGamesLauncher','Discord')
+    [string[]]$DisableStartupNames = @('OneDriveSetup','Spotify','Steam','EpicGamesLauncher','Discord'),
+
+    # Skip deleting very recent temp files to reduce contention with active processes.
+    [int]$TempFileMinAgeMinutes = 30
 )
 
 $ErrorActionPreference = 'Stop'
 $LogDir  = 'C:\ProgramData\PredictiveDeviceHealth\Logs'
 $LogFile = Join-Path $LogDir 'SlowStartup-Remediate.log'
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
-function Write-Log { param($m) "$(Get-Date -Format o) $m" | Out-File -FilePath $LogFile -Append -Encoding utf8 }
 
-$actions = @()
-try {
-    # 1. Clear temp files (skip files in use)
-    $tempPaths = @($env:TEMP, "$env:WINDIR\Temp")
-    foreach ($p in $tempPaths) {
-        if (Test-Path $p) {
-            Get-ChildItem $p -Recurse -Force -ErrorAction SilentlyContinue |
-                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-        }
+$logBuffer = [System.Collections.Generic.List[string]]::new()
+function Add-Log { param([string]$m) $script:logBuffer.Add("$(Get-Date -Format o) $m") }
+function Flush-Log {
+    if ($script:logBuffer.Count -gt 0) {
+        $script:logBuffer | Out-File -FilePath $LogFile -Append -Encoding utf8
+        $script:logBuffer.Clear()
     }
-    $actions += 'Cleared temp folders'
-    Write-Log 'Cleared temp folders'
+}
+
+function Clear-TempPath {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][datetime]$Cutoff
+    )
+
+    $removedFiles = 0
+    $removedDirs  = 0
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return [pscustomobject]@{ Files = 0; Dirs = 0 }
+    }
+
+    # Delete older files first (fastest wins); skip locked/in-use files silently.
+    Get-ChildItem -LiteralPath $Path -Recurse -Force -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt $Cutoff } |
+        ForEach-Object {
+            try {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+                $removedFiles++
+            } catch { }
+        }
+
+    # Then remove now-empty directories older than cutoff.
+    Get-ChildItem -LiteralPath $Path -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+        Sort-Object -Property FullName -Descending |
+        Where-Object { $_.LastWriteTime -lt $Cutoff } |
+        ForEach-Object {
+            try {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+                $removedDirs++
+            } catch { }
+        }
+
+    return [pscustomobject]@{ Files = $removedFiles; Dirs = $removedDirs }
+}
+
+$actions = [System.Collections.Generic.List[string]]::new()
+try {
+    # 1. Clear temp files (skip files in use / very recent temp files)
+    $tempPaths = @($env:TEMP, "$env:WINDIR\Temp")
+    $cutoff = (Get-Date).AddMinutes(-1 * [math]::Abs($TempFileMinAgeMinutes))
+
+    $totalFiles = 0
+    $totalDirs = 0
+    foreach ($p in $tempPaths) {
+        $result = Clear-TempPath -Path $p -Cutoff $cutoff
+        $totalFiles += $result.Files
+        $totalDirs += $result.Dirs
+    }
+
+    [void]$actions.Add("Cleared temp folders (files=$totalFiles, dirs=$totalDirs, minAge=${TempFileMinAgeMinutes}m)")
+    Add-Log "Cleared temp folders: files=$totalFiles dirs=$totalDirs minAge=${TempFileMinAgeMinutes}m"
 
     # 2. Disable non-essential startup apps via Run keys
     $runKeys = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
         'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
     )
+
     foreach ($k in $runKeys) {
-        if (Test-Path $k) {
-            foreach ($name in $DisableStartupNames) {
-                if ((Get-Item $k).Property -contains $name) {
-                    Remove-ItemProperty -Path $k -Name $name -ErrorAction SilentlyContinue
-                    $actions += "Disabled startup: $name"
-                    Write-Log "Disabled startup app: $name"
-                }
+        if (-not (Test-Path $k)) { continue }
+
+        $key = Get-Item -Path $k -ErrorAction SilentlyContinue
+        if ($null -eq $key -or $null -eq $key.Property) { continue }
+
+        $props = $key.Property
+        foreach ($name in $DisableStartupNames) {
+            if ($props -contains $name) {
+                Remove-ItemProperty -Path $k -Name $name -ErrorAction SilentlyContinue
+                [void]$actions.Add("Disabled startup: $name")
+                Add-Log "Disabled startup app: $name"
             }
         }
     }
@@ -58,17 +115,22 @@ try {
             $s = Get-Service -Name $svc -ErrorAction Stop
             if ($s.Status -eq 'Running') { Restart-Service -Name $svc -Force -ErrorAction Stop }
             else { Start-Service -Name $svc -ErrorAction SilentlyContinue }
-            $actions += "Cycled service: $svc"
-            Write-Log "Restarted service: $svc"
-        } catch { Write-Log "Service $svc not cycled: $($_.Exception.Message)" }
+            [void]$actions.Add("Cycled service: $svc")
+            Add-Log "Restarted service: $svc"
+        } catch {
+            Add-Log "Service $svc not cycled: $($_.Exception.Message)"
+        }
     }
 
-    Write-Log "Remediation actions: $($actions -join '; ')"
-    Write-Output "Remediated: $($actions -join '; ')"
+    $actionsText = ($actions -join '; ')
+    Add-Log "Remediation actions: $actionsText"
+    Flush-Log
+    Write-Output "Remediated: $actionsText"
     exit 0
 }
 catch {
-    Write-Log "ERROR: $($_.Exception.Message)"
+    Add-Log "ERROR: $($_.Exception.Message)"
+    Flush-Log
     Write-Output "Remediation error: $($_.Exception.Message)"
     exit 1
 }

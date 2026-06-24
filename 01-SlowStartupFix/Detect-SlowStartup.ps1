@@ -25,10 +25,45 @@ $ErrorActionPreference = 'Stop'
 $LogDir  = 'C:\ProgramData\PredictiveDeviceHealth\Logs'
 $LogFile = Join-Path $LogDir 'SlowStartup-Detect.log'
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
-function Write-Log { param($m) "$(Get-Date -Format o) $m" | Out-File -FilePath $LogFile -Append -Encoding utf8 }
+
+$logBuffer = [System.Collections.Generic.List[string]]::new()
+function Add-Log { param([string]$m) $script:logBuffer.Add("$(Get-Date -Format o) $m") }
+function Flush-Log {
+    if ($script:logBuffer.Count -gt 0) {
+        $script:logBuffer | Out-File -FilePath $LogFile -Append -Encoding utf8
+        $script:logBuffer.Clear()
+    }
+}
+
+function Get-TempBytesUpToThreshold {
+    param(
+        [Parameter(Mandatory=$true)][string[]]$Paths,
+        [Parameter(Mandatory=$true)][long]$Threshold
+    )
+
+    [long]$sum = 0
+    foreach ($p in $Paths) {
+        if (-not (Test-Path $p)) { continue }
+
+        Get-ChildItem -LiteralPath $p -Recurse -Force -File -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                if ($null -ne $_.Length) {
+                    $sum += [long]$_.Length
+                    if ($sum -gt $Threshold) {
+                        Add-Log "Temp threshold exceeded while scanning $p"
+                        return $sum
+                    }
+                }
+            }
+
+        if ($sum -gt $Threshold) { return $sum }
+    }
+
+    return $sum
+}
 
 try {
-    $reasons = @()
+    $reasons = [System.Collections.Generic.List[string]]::new()
 
     # 1. Boot duration from the Diagnostics-Performance operational log.
     # Validate the event schema and property indexing on the Windows versions
@@ -37,53 +72,63 @@ try {
         $evt = Get-WinEvent -FilterHashtable @{
             LogName = 'Microsoft-Windows-Diagnostics-Performance/Operational'; Id = 100
         } -MaxEvents 1 -ErrorAction Stop
+
         if ($evt -and $evt.Properties.Count -gt 8) {
             $bootMs = [int]($evt.Properties[8].Value)
-            Write-Log "Last boot duration: ${bootMs}ms (threshold ${BootThresholdMs}ms)"
-            if ($bootMs -gt $BootThresholdMs) { $reasons += "BootTime ${bootMs}ms" }
-        } else {
-            Write-Log 'Boot event did not include expected BootTime property index.'
+            Add-Log "Last boot duration: ${bootMs}ms (threshold ${BootThresholdMs}ms)"
+            if ($bootMs -gt $BootThresholdMs) { [void]$reasons.Add("BootTime ${bootMs}ms") }
         }
-    } catch { Write-Log "Boot event unavailable: $($_.Exception.Message)" }
-
-    # 2. Temp clutter
-    $tempPaths = @($env:TEMP, "$env:WINDIR\Temp")
-    $tempBytes = 0
-    foreach ($p in $tempPaths) {
-        if (Test-Path $p) {
-            $tempBytes += (Get-ChildItem $p -Recurse -Force -ErrorAction SilentlyContinue |
-                Measure-Object -Property Length -Sum).Sum
+        else {
+            Add-Log 'Boot event did not include expected BootTime property index.'
         }
     }
-    Write-Log "Temp bytes: $tempBytes (threshold $TempBytesThreshold)"
-    if ($tempBytes -gt $TempBytesThreshold) { $reasons += "Temp $([math]::Round($tempBytes/1GB,2))GB" }
+    catch {
+        Add-Log "Boot event unavailable: $($_.Exception.Message)"
+    }
+
+    # 2. Temp clutter (short-circuit once threshold exceeded)
+    $tempPaths = @($env:TEMP, "$env:WINDIR\Temp")
+    [long]$tempBytes = Get-TempBytesUpToThreshold -Paths $tempPaths -Threshold $TempBytesThreshold
+    Add-Log "Temp bytes: $tempBytes (threshold $TempBytesThreshold)"
+    if ($tempBytes -gt $TempBytesThreshold) {
+        [void]$reasons.Add("Temp $([math]::Round($tempBytes / 1GB, 2))GB")
+    }
 
     # 3. Enabled startup app count from Run keys
     $runKeys = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
         'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
     )
+
     $startupCount = 0
     foreach ($k in $runKeys) {
         if (Test-Path $k) {
-            $startupCount += (Get-Item $k).Property.Count
+            $key = Get-Item -Path $k -ErrorAction SilentlyContinue
+            if ($null -ne $key -and $null -ne $key.Property) {
+                $startupCount += $key.Property.Count
+            }
         }
     }
-    Write-Log "Enabled Run-key startup apps: $startupCount (threshold $MaxStartupApps)"
-    if ($startupCount -gt $MaxStartupApps) { $reasons += "$startupCount startup apps" }
+
+    Add-Log "Enabled Run-key startup apps: $startupCount (threshold $MaxStartupApps)"
+    if ($startupCount -gt $MaxStartupApps) { [void]$reasons.Add("$startupCount startup apps") }
 
     if ($reasons.Count -gt 0) {
-        Write-Log "DETECTED issue(s): $($reasons -join '; ')"
-        Write-Output "Slow startup detected: $($reasons -join '; ')"
+        $reasonText = ($reasons -join '; ')
+        Add-Log "DETECTED issue(s): $reasonText"
+        Flush-Log
+        Write-Output "Slow startup detected: $reasonText"
         exit 1
     }
 
-    Write-Log 'Healthy - no slow-startup signals.'
+    Add-Log 'Healthy - no slow-startup signals.'
+    Flush-Log
     Write-Output 'Startup health OK'
     exit 0
 }
 catch {
-    Write-Log "ERROR: $($_.Exception.Message)"
+    Add-Log "ERROR: $($_.Exception.Message)"
+    Flush-Log
     Write-Output "Detection error: $($_.Exception.Message)"
     exit 0  # fail-safe: do not trigger remediation on detection error
 }
